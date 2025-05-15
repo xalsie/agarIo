@@ -8,6 +8,9 @@ const playerCount = ref(0);
 const playerPosition = ref({ x: 0, y: 0 });
 const showMenu = ref(true);
 
+// Leaderboard state
+const leaderboard = ref([]);
+
 let w = window.innerWidth;
 let h = window.innerHeight;
 
@@ -40,6 +43,8 @@ function randomColor() {
         border: `hsla(${color}, 100%, 35%, 1)`,
     };
 }
+
+
 
 function connectToServer(nick) {
     const color = randomColor();
@@ -74,8 +79,9 @@ p5.setup = () => {
 };
 
 p5.draw = () => {
+    // FPS update throttled to 1s for less DOM update
     const now = performance.now();
-    if (now - lastFpsUpdate > 500) {
+    if (now - lastFpsUpdate > 1000) {
         const newFps = Math.round(p5.frameRate());
         if (fps.value !== newFps) fps.value = newFps;
         lastFpsUpdate = now;
@@ -109,17 +115,16 @@ p5.draw = () => {
     const viewY = players[socket.id].pos.y;
     const viewW = w / zoom;
     const viewH = h / zoom;
+    // Cache visible area for blobs
+    const minBlobX = viewX - viewW / 2 - BLOB_RADIUS;
+    const maxBlobX = viewX + viewW / 2 + BLOB_RADIUS;
+    const minBlobY = viewY - viewH / 2 - BLOB_RADIUS;
+    const maxBlobY = viewY + viewH / 2 + BLOB_RADIUS;
     for (let i = blobs.length - 1; i >= 0; i--) {
         const blob = blobs[i];
         if (!blob) continue;
-        // Only draw blobs in viewport
-        if (
-            blob.pos.x < viewX - viewW / 2 - BLOB_RADIUS ||
-            blob.pos.x > viewX + viewW / 2 + BLOB_RADIUS ||
-            blob.pos.y < viewY - viewH / 2 - BLOB_RADIUS ||
-            blob.pos.y > viewY + viewH / 2 + BLOB_RADIUS
-        )
-            continue;
+        const bx = blob.pos.x, by = blob.pos.y;
+        if (bx < minBlobX || bx > maxBlobX || by < minBlobY || by > maxBlobY) continue;
         blob.draw();
         if (players[socket.id].eats(blob)) {
             socket.emit("eatBlob", i);
@@ -132,15 +137,15 @@ p5.draw = () => {
     p5.rect(0, 0, FIELD_SIZE, FIELD_SIZE);
     ui.draw();
     // --- OPTIMIZED PLAYERS RENDERING: only draw visible players ---
+    // Cache visible area for players
+    const minPlayerX = viewX - viewW / 2 - PLAYER_RADIUS;
+    const maxPlayerX = viewX + viewW / 2 + PLAYER_RADIUS;
+    const minPlayerY = viewY - viewH / 2 - PLAYER_RADIUS;
+    const maxPlayerY = viewY + viewH / 2 + PLAYER_RADIUS;
     for (const id in players) {
         const player = players[id];
-        if (
-            player.pos.x < viewX - viewW / 2 - PLAYER_RADIUS ||
-            player.pos.x > viewX + viewW / 2 + PLAYER_RADIUS ||
-            player.pos.y < viewY - viewH / 2 - PLAYER_RADIUS ||
-            player.pos.y > viewY + viewH / 2 + PLAYER_RADIUS
-        )
-            continue;
+        const px = player.pos.x, py = player.pos.y;
+        if (px < minPlayerX || px > maxPlayerX || py < minPlayerY || py > maxPlayerY) continue;
         player.draw();
         if (id !== socket.id && players[socket.id].eats(player) && player) {
             delete players[id];
@@ -156,13 +161,17 @@ p5.draw = () => {
         }
     }
     // Only update playerPosition ref if changed
+    // Only update playerPosition ref if changed, throttle to 100ms
     if (players[socket.id]) {
         const px = Math.round(players[socket.id].pos.x);
         const py = Math.round(players[socket.id].pos.y);
-        if (lastPlayerPos.x !== px || lastPlayerPos.y !== py) {
-            playerPosition.value = { x: px, y: py };
-            lastPlayerPos.x = px;
-            lastPlayerPos.y = py;
+        if (!p5._lastPosUpdate || now - p5._lastPosUpdate > 100) {
+            if (lastPlayerPos.x !== px || lastPlayerPos.y !== py) {
+                playerPosition.value = { x: px, y: py };
+                lastPlayerPos.x = px;
+                lastPlayerPos.y = py;
+            }
+            p5._lastPosUpdate = now;
         }
     }
 };
@@ -204,6 +213,12 @@ socket.on("heartbeat", (data) => {
         }
     }
     playerCount.value = Object.keys(data.players).length;
+    // Sync leaderboard from backend data
+    leaderboard.value = Object.values(data.players)
+        .filter(p => p && p.n)
+        .sort((a, b) => b.r - a.r)
+        .slice(0, 10)
+        .map(p => ({ nick: p.n, score: p5.floor(p.r * 2) }));
 });
 
 socket.on("newPlayer", (data) => {
@@ -239,11 +254,26 @@ socket.on("newBlob", (data) => {
 
 <template>
     <div>
-        <div class="players player-position" id="playersStats" style="display: block">
-            <div>
-                Players: <span>{{ playerCount }}</span>
-            </div>
+
+        <canvas ref="gameCanvas" id="gameCanvas" :width="w" :height="h" style="position:fixed;top:0;left:0;z-index:0;"></canvas>
+
+        <div id="leaderboard" class="leaderboard">
+            <h3>Leaderboard</h3>
+            <ol>
+                <li v-for="(entry, i) in leaderboard" :key="i">
+                    <span>{{ i + 1 }}. {{ entry.nick }} ({{ entry.score }})</span>
+                </li>
+            </ol>
+        </div>
+
+        <div id="playersStats" class="players player-position">
             <div v-if="playerPosition" class="flex flex-col items-center">
+                <div class="fps-counter">
+                    FPS: <span>{{ fps }}</span>
+                </div>
+                <div>
+                    Players: <span>{{ playerCount }}</span>
+                </div>
                 <div>
                     <span>Position X: {{ playerPosition.x }}</span>
                 </div>
@@ -251,11 +281,9 @@ socket.on("newBlob", (data) => {
                     <span>Position Y: {{ playerPosition.y }}</span>
                 </div>
             </div>
-            <div class="fps-counter">
-                FPS: <span>{{ fps }}</span>
-            </div>
         </div>
-        <div class="game-menu" v-show="showMenu" id="menu">
+
+        <div id="menu" v-show="showMenu" class="game-menu bg-red-500 rounded-lg p-4">
             <h1 class="game-header">agario.js</h1>
             <input type="text" placeholder="Nickname" id="nick" required class="name-input" />
             <button @click="handleConnect" class="connect-btn btn">connect</button>
@@ -459,9 +487,43 @@ body {
 }
 
 .fps-counter {
-    margin-top: 8px;
+    margin-bottom: 8px;
     font-size: 1rem;
     color: #aaffaa;
     text-shadow: 1px 1px 2px #000;
+}
+
+.leaderboard {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    padding: 10px 18px 10px 18px;
+    border-radius: 10px;
+    font-size: 1.1rem;
+    z-index: 20;
+    min-width: 180px;
+    margin-bottom: 8px;
+}
+.leaderboard h3 {
+    margin: 0 0 6px 0;
+    font-size: 1.1rem;
+    font-weight: bold;
+    text-align: center;
+    letter-spacing: 1px;
+}
+.leaderboard ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.leaderboard li {
+    margin: 0 0 2px 0;
+    padding: 0;
+    font-size: 1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 </style>
