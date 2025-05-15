@@ -6,7 +6,7 @@ import cors from 'cors';
 import {
 	BLOCKS_COUNT,
 	BLOBS_COUNT,
-} from '../constants.js';
+} from './constants.js';
 import {Blob, Block, Socket} from './lib/index.js';
 
 const app = express();
@@ -51,7 +51,6 @@ for (let i = 0; i < BLOBS_COUNT; i++) {
 }
 
 // Handle socket
-// Socket(io, players, field, blobs);
 Socket(io, players, field, blobs);
 
 // Listen on port
