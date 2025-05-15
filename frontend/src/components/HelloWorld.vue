@@ -1,8 +1,8 @@
 <script setup>
 import { onMounted, ref } from "vue";
 import { io } from "socket.io-client";
-import p5 from './p5-instantiate';
-import { Blob, Grid, Player, UI } from './assets/index';
+import p5 from "./p5-instantiate";
+import { Blob, Grid, Player, UI } from "./assets/index";
 
 const playerCount = ref(0);
 const playerPosition = ref({ x: 0, y: 0 });
@@ -14,7 +14,11 @@ let h = window.innerHeight;
 const PLAYER_RADIUS = 16;
 const FIELD_SIZE = 10000;
 const GRID_SIZE = 40;
+const BLOCKS_COUNT = Math.ceil(FIELD_SIZE / 10);
+const BLOCKS_SIZE = FIELD_SIZE / BLOCKS_COUNT;
+
 const BLOBS_COUNT = FIELD_SIZE / 1.25;
+const BLOB_RADIUS = 5;
 
 let players = {};
 let ui, grid;
@@ -25,11 +29,15 @@ let zoom = 1;
 
 let socket = io("http://localhost:4000");
 
+const fps = ref(0);
+let lastFpsUpdate = 0;
+let lastPlayerPos = { x: 0, y: 0 };
+
 function randomColor() {
     const color = p5.floor(p5.random(360));
     return {
-        body: `hsla(${color}, 100%, 50%, 1)` ,
-        border: `hsla(${color}, 100%, 35%, 1)`
+        body: `hsla(${color}, 100%, 50%, 1)`,
+        border: `hsla(${color}, 100%, 35%, 1)`,
     };
 }
 
@@ -66,11 +74,22 @@ p5.setup = () => {
 };
 
 p5.draw = () => {
+    const now = performance.now();
+    if (now - lastFpsUpdate > 500) {
+        const newFps = Math.round(p5.frameRate());
+        if (fps.value !== newFps) fps.value = newFps;
+        lastFpsUpdate = now;
+    }
     if (!gameStarted) {
         p5.clear();
-        grid.draw();
-        blobs.forEach(blob => blob && blob.draw());
-        Object.values(players).forEach(player => player.draw());
+        // Optimized grid draw: only visible lines
+        grid.draw(w / 2, h / 2, w, h, 1);
+        for (let i = 0, len = blobs.length; i < len; i++) {
+            if (blobs[i]) blobs[i].draw();
+        }
+        for (const id in players) {
+            players[id].draw();
+        }
         p5.fill(0, 0, 0, 120);
         p5.noStroke();
         p5.rect(0, 0, w, h);
@@ -83,11 +102,26 @@ p5.draw = () => {
     zoom = p5.lerp(zoom, Math.max(newZoom, 0.7), 0.1);
     p5.scale(zoom);
     p5.translate(-players[socket.id].pos.x, -players[socket.id].pos.y);
-    grid.draw();
+    // Optimized grid draw: only visible lines
+    grid.draw(players[socket.id].pos.x, players[socket.id].pos.y, w, h, zoom);
+    // --- OPTIMIZED BLOBS RENDERING: only draw visible blobs ---
+    const viewX = players[socket.id].pos.x;
+    const viewY = players[socket.id].pos.y;
+    const viewW = w / zoom;
+    const viewH = h / zoom;
     for (let i = blobs.length - 1; i >= 0; i--) {
-        if (!blobs[i]) continue;
-        blobs[i].draw();
-        if (players[socket.id].eats(blobs[i])) {
+        const blob = blobs[i];
+        if (!blob) continue;
+        // Only draw blobs in viewport
+        if (
+            blob.pos.x < viewX - viewW / 2 - BLOB_RADIUS ||
+            blob.pos.x > viewX + viewW / 2 + BLOB_RADIUS ||
+            blob.pos.y < viewY - viewH / 2 - BLOB_RADIUS ||
+            blob.pos.y > viewY + viewH / 2 + BLOB_RADIUS
+        )
+            continue;
+        blob.draw();
+        if (players[socket.id].eats(blob)) {
             socket.emit("eatBlob", i);
             blobs.splice(i, 1);
         }
@@ -97,9 +131,18 @@ p5.draw = () => {
     p5.noFill();
     p5.rect(0, 0, FIELD_SIZE, FIELD_SIZE);
     ui.draw();
-    for (let id in players) {
-        players[id].draw();
-        if (id !== socket.id && players[socket.id].eats(players[id]) && players[id]) {
+    // --- OPTIMIZED PLAYERS RENDERING: only draw visible players ---
+    for (const id in players) {
+        const player = players[id];
+        if (
+            player.pos.x < viewX - viewW / 2 - PLAYER_RADIUS ||
+            player.pos.x > viewX + viewW / 2 + PLAYER_RADIUS ||
+            player.pos.y < viewY - viewH / 2 - PLAYER_RADIUS ||
+            player.pos.y > viewY + viewH / 2 + PLAYER_RADIUS
+        )
+            continue;
+        player.draw();
+        if (id !== socket.id && players[socket.id].eats(player) && player) {
             delete players[id];
             socket.emit("removePlayer", id);
         }
@@ -112,11 +155,15 @@ p5.draw = () => {
             });
         }
     }
+    // Only update playerPosition ref if changed
     if (players[socket.id]) {
-        playerPosition.value = {
-            x: Math.round(players[socket.id].pos.x),
-            y: Math.round(players[socket.id].pos.y)
-        };
+        const px = Math.round(players[socket.id].pos.x);
+        const py = Math.round(players[socket.id].pos.y);
+        if (lastPlayerPos.x !== px || lastPlayerPos.y !== py) {
+            playerPosition.value = { x: px, y: py };
+            lastPlayerPos.x = px;
+            lastPlayerPos.y = py;
+        }
     }
 };
 
@@ -126,7 +173,7 @@ onMounted(() => {
 
 // Socket events
 socket.on("blobs", (data) => {
-    blobs = data.blobs.map(b => new Blob(b.x, b.y, b.r, b.c));
+    blobs = data.blobs.map((b) => new Blob(b.x, b.y, b.r, b.c));
     showMenu.value = true;
 });
 
@@ -136,7 +183,9 @@ socket.on("start", (data) => {
         players[id] = new Player(p.n, p.id, p.b, p.bc, p.x, p.y);
         players[id].block = [p.block.row, p.block.col];
     }
-    blobs = data.blobs.map(b => b && new Blob(b.x, b.y, b.r, b.c)).filter(Boolean);
+    blobs = data.blobs
+        .map((b) => b && new Blob(b.x, b.y, b.r, b.c))
+        .filter(Boolean);
     gameStarted = true;
     paused = false;
 });
@@ -148,14 +197,24 @@ socket.on("heartbeat", (data) => {
             players[id].pos.y = data.players[id].y;
             players[id].radius = data.players[id].r;
         } else if (players[id]) {
-            players[id].block = [data.players[id].block.row, data.players[id].block.col];
+            players[id].block = [
+                data.players[id].block.row,
+                data.players[id].block.col,
+            ];
         }
     }
     playerCount.value = Object.keys(data.players).length;
 });
 
 socket.on("newPlayer", (data) => {
-    players[data.id] = new Player(data.n, data.id, data.b, data.bc, data.x, data.y);
+    players[data.id] = new Player(
+        data.n,
+        data.id,
+        data.b,
+        data.bc,
+        data.x,
+        data.y
+    );
     playerCount.value = Object.keys(players).length;
 });
 
@@ -185,8 +244,15 @@ socket.on("newBlob", (data) => {
                 Players: <span>{{ playerCount }}</span>
             </div>
             <div v-if="playerPosition" class="flex flex-col items-center">
-                <div><span>Position X: {{ playerPosition.x }}</span></div>
-                <div><span>Position Y: {{ playerPosition.y }}</span></div>
+                <div>
+                    <span>Position X: {{ playerPosition.x }}</span>
+                </div>
+                <div>
+                    <span>Position Y: {{ playerPosition.y }}</span>
+                </div>
+            </div>
+            <div class="fps-counter">
+                FPS: <span>{{ fps }}</span>
             </div>
         </div>
         <div class="game-menu" v-show="showMenu" id="menu">
@@ -218,6 +284,7 @@ a {
     color: #646cff;
     text-decoration: inherit;
 }
+
 a:hover {
     color: #535bf2;
 }
@@ -246,9 +313,11 @@ button {
     cursor: pointer;
     transition: border-color 0.25s;
 }
+
 button:hover {
     border-color: #646cff;
 }
+
 button:focus,
 button:focus-visible {
     outline: 4px auto -webkit-focus-ring-color;
@@ -270,13 +339,16 @@ button:focus-visible {
         color: #213547;
         background-color: #ffffff;
     }
+
     a:hover {
         color: #747bff;
     }
+
     button {
         background-color: #f9f9f9;
     }
 }
+
 /* ------------------ */
 body {
     margin: 0;
@@ -374,16 +446,22 @@ body {
     background: black;
 }
 
-.player-position
-{
-  /* position: absolute;
+.player-position {
+    /* position: absolute;
   top: 8px;
   right: 16px; */
-  background: rgba(0,0,0,0.5);
-  color: #fff;
-  padding: 6px 16px;
-  border-radius: 8px;
-  font-size: 1.1rem;
-  z-index: 10;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    padding: 6px 16px;
+    border-radius: 8px;
+    font-size: 1.1rem;
+    z-index: 10;
+}
+
+.fps-counter {
+    margin-top: 8px;
+    font-size: 1rem;
+    color: #aaffaa;
+    text-shadow: 1px 1px 2px #000;
 }
 </style>
