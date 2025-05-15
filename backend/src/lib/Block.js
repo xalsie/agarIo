@@ -1,7 +1,6 @@
 import {
 	BLOCKS_SIZE,
 } from '../constants.js';
-// Import { Blob } from './index.js'
 
 class Block {
 	constructor(row, col) {

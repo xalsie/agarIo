@@ -1,5 +1,5 @@
 class Player {
-	constructor(x, y, r, b, bc, n, id) {
+	constructor({x, y, r, b, bc, n, id}) {
 		this.x = x; // X pos
 		this.y = y; // Y pos
 		this.r = r; // Radius

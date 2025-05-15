@@ -4,9 +4,16 @@ import { io } from "socket.io-client";
 import p5 from "./p5-instantiate";
 import { Blob, Grid, Player, UI } from "./assets/index";
 
+const VUE_APP_API_URL = "http://localhost:4000";
+
 const playerCount = ref(0);
 const playerPosition = ref({ x: 0, y: 0 });
 const showMenu = ref(true);
+
+// Channel selection state
+const selectedChannel = ref('1');
+const privateCode = ref('');
+const usePrivate = ref(false);
 
 // Leaderboard state
 const leaderboard = ref([]);
@@ -30,7 +37,7 @@ let paused = true;
 let gameStarted = false;
 let zoom = 1;
 
-let socket = io("http://localhost:4000");
+let socket = null;
 
 const fps = ref(0);
 let lastFpsUpdate = 0;
@@ -44,12 +51,36 @@ function randomColor() {
     };
 }
 
-
-
 function connectToServer(nick) {
+    if (!socket) {
+        socket = io(VUE_APP_API_URL);
+        setupSocketEvents();
+    }
     const color = randomColor();
-    const player = new Player(nick, socket.id, color.body, color.border);
-    socket.emit("start", {
+
+    ui = new UI(p5, players, socket);
+
+    const player = new Player({
+        nick,
+        id: socket.id,
+        color: color.body,
+        bcolor: color.border,
+        x: p5.random(0, FIELD_SIZE),
+        y: p5.random(0, FIELD_SIZE),
+    });
+    let channelId = usePrivate.value ? undefined : selectedChannel.value;
+    let code = usePrivate.value ? privateCode.value.trim() : undefined;
+    if (usePrivate.value && !code) {
+        alert('Veuillez entrer un code de salon privé.');
+        return;
+    }
+    if (!usePrivate.value && !channelId) {
+        alert('Veuillez sélectionner un channel.');
+        return;
+    }
+    socket.emit("joinChannel", {
+        channelId,
+        code,
         x: player.pos.x,
         y: player.pos.y,
         r: player.radius,
@@ -58,11 +89,86 @@ function connectToServer(nick) {
         n: player.nick,
     });
     showMenu.value = false;
+
+    socket.on("heartbeat", (data) => {
+        for (let id in data.players) {
+            if (players[id]) {
+                // For local player, update radius and block only
+                if (id === socket.id) {
+                    players[id].radius = data.players[id].r;
+                    players[id].block = [
+                        data.players[id].block.row,
+                        data.players[id].block.col,
+                    ];
+                } else {
+                    // For enemies, set target for interpolation and update radius
+                    players[id].setTarget(data.players[id].x, data.players[id].y);
+                    players[id].radius = data.players[id].r;
+                }
+            }
+        }
+        playerCount.value = Object.keys(data.players).length;
+        // Sync leaderboard from backend data
+        leaderboard.value = Object.values(data.players)
+            .filter(p => p && p.n)
+            .sort((a, b) => b.r - a.r)
+            .slice(0, 10)
+            .map(p => ({ nick: p.n, score: p5.floor(p.r * 2) }));
+    });
+
+    socket.on("newPlayer", (data) => {
+        players[data.id] = new Player({
+            nick: data.n,
+            id: data.id,
+            color: data.b,
+            bcolor: data.bc,
+            x: data.x,
+            y: data.y
+        });
+        playerCount.value = Object.keys(players).length;
+    });
+
+    socket.on("removePlayer", (data) => {
+        delete players[data.id];
+        if (data.id == socket.id) {
+            gameStarted = false;
+            paused = true;
+            showMenu.value = true;
+        }
+        playerCount.value = Object.keys(players).length;
+    });
+
+    socket.on("removeBlob", (data) => {
+        if (data.id !== socket.id) blobs.splice(data.i, 1);
+    });
+
+    socket.on("newBlob", (data) => {
+        blobs.push(
+            new Blob({
+                x: data.x,
+                y: data.y,
+                r: data.r,
+                c: data.c
+            })
+        );
+    });
+
+    socket.on("disconnect", () => {
+        gameStarted = false;
+        paused = true;
+        showMenu.value = true;
+        players = {};
+        blobs = [];
+    });
 }
 
 function handleConnect() {
     const nick = document.getElementById("nick").value;
-    if (nick) connectToServer(nick);
+    if (!nick) {
+        alert('Veuillez entrer un pseudo.');
+        return;
+    }
+    connectToServer(nick);
 }
 
 function windowResized() {
@@ -73,9 +179,15 @@ function windowResized() {
 
 p5.setup = () => {
     p5.createCanvas(w, h);
-    ui = new UI(p5, players, socket);
+    // ui = new UI(p5, players, socket);
     grid = new Grid(GRID_SIZE);
-    grid.draw();
+    grid.draw({
+        viewportX: w / 2,
+        viewportY: h / 2,
+        viewportW: w,
+        viewportH: h,
+        zoom: 1,
+    });
 };
 
 p5.draw = () => {
@@ -89,7 +201,13 @@ p5.draw = () => {
     if (!gameStarted) {
         p5.clear();
         // Optimized grid draw: only visible lines
-        grid.draw(w / 2, h / 2, w, h, 1);
+        grid.draw({
+            viewportX: w / 2,
+            viewportY: h / 2,
+            viewportW: w,
+            viewportH: h,
+            zoom: 1,
+        });
         for (let i = 0, len = blobs.length; i < len; i++) {
             if (blobs[i]) blobs[i].draw();
         }
@@ -101,18 +219,40 @@ p5.draw = () => {
         p5.rect(0, 0, w, h);
         return;
     }
-    if (!players[socket.id]) return ui.loading();
+    // Defensive: check socket and players[socket.id] before using
+    if (!socket || !players || !players[socket.id]) {
+        if (ui && typeof ui.loading === 'function') return ui.loading();
+        return;
+    }
     p5.clear();
     p5.translate(w / 2, h / 2);
-    let newZoom = p5.sqrt(h / (players[socket.id].radius * 8));
+    let player = players[socket.id];
+    let newZoom = p5.sqrt(h / ((player && player.radius ? player.radius : PLAYER_RADIUS) * 8));
     zoom = p5.lerp(zoom, Math.max(newZoom, 0.7), 0.1);
     p5.scale(zoom);
-    p5.translate(-players[socket.id].pos.x, -players[socket.id].pos.y);
-    // Optimized grid draw: only visible lines
-    grid.draw(players[socket.id].pos.x, players[socket.id].pos.y, w, h, zoom);
+    if (player && player.pos) {
+        p5.translate(-player.pos.x, -player.pos.y);
+        // Optimized grid draw: only visible lines
+        grid.draw({
+            viewportX: player.pos.x,
+            viewportY: player.pos.y,
+            viewportW: w,
+            viewportH: h,
+            zoom: zoom,
+        });
+    } else {
+        p5.translate(0, 0);
+        grid.draw({
+            viewportX: 0,
+            viewportY: 0,
+            viewportW: w,
+            viewportH: h,
+            zoom: zoom,
+        });
+    }
     // --- OPTIMIZED BLOBS RENDERING: only draw visible blobs ---
-    const viewX = players[socket.id].pos.x;
-    const viewY = players[socket.id].pos.y;
+    const viewX = player && player.pos ? player.pos.x : 0;
+    const viewY = player && player.pos ? player.pos.y : 0;
     const viewW = w / zoom;
     const viewH = h / zoom;
     // Cache visible area for blobs
@@ -126,7 +266,7 @@ p5.draw = () => {
         const bx = blob.pos.x, by = blob.pos.y;
         if (bx < minBlobX || bx > maxBlobX || by < minBlobY || by > maxBlobY) continue;
         blob.draw();
-        if (players[socket.id].eats(blob)) {
+        if (player && typeof player.eats === 'function' && player.eats(blob)) {
             socket.emit("eatBlob", i);
             blobs.splice(i, 1);
         }
@@ -143,28 +283,35 @@ p5.draw = () => {
     const minPlayerY = viewY - viewH / 2 - PLAYER_RADIUS;
     const maxPlayerY = viewY + viewH / 2 + PLAYER_RADIUS;
     for (const id in players) {
-        const player = players[id];
-        const px = player.pos.x, py = player.pos.y;
+        const p = players[id];
+        if (!p || !p.pos) continue;
+        // Mark local player for interpolation logic
+        p.isLocal = (id === socket.id);
+        // Interpolate enemy movement
+        if (!p.isLocal && typeof p.interpolate === 'function') {
+            p.interpolate(0.05); // dt controls smoothing
+        }
+        const px = p.pos.x, py = p.pos.y;
         if (px < minPlayerX || px > maxPlayerX || py < minPlayerY || py > maxPlayerY) continue;
-        player.draw();
-        if (id !== socket.id && players[socket.id].eats(player) && player) {
+        p.draw();
+        if (id !== socket.id && player && typeof player.eats === 'function' && player.eats(p) && p) {
             delete players[id];
             socket.emit("removePlayer", id);
         }
-        if (id === socket.id && !paused && players[socket.id]) {
-            players[socket.id].move();
+        if (id === socket.id && !paused && player) {
+            if (typeof player.move === 'function') player.move();
             socket.emit("update", {
-                x: players[socket.id].pos.x,
-                y: players[socket.id].pos.y,
-                r: players[socket.id].radius,
+                x: player.pos.x,
+                y: player.pos.y,
+                r: player.radius,
             });
         }
     }
     // Only update playerPosition ref if changed
     // Only update playerPosition ref if changed, throttle to 100ms
-    if (players[socket.id]) {
-        const px = Math.round(players[socket.id].pos.x);
-        const py = Math.round(players[socket.id].pos.y);
+    if (player && player.pos) {
+        const px = Math.round(player.pos.x);
+        const py = Math.round(player.pos.y);
         if (!p5._lastPosUpdate || now - p5._lastPosUpdate > 100) {
             if (lastPlayerPos.x !== px || lastPlayerPos.y !== py) {
                 playerPosition.value = { x: px, y: py };
@@ -181,82 +328,51 @@ onMounted(() => {
 });
 
 // Socket events
-socket.on("blobs", (data) => {
-    blobs = data.blobs.map((b) => new Blob(b.x, b.y, b.r, b.c));
-    showMenu.value = true;
-});
-
-socket.on("start", (data) => {
-    for (let id in data.players) {
-        let p = data.players[id];
-        players[id] = new Player(p.n, p.id, p.b, p.bc, p.x, p.y);
-        players[id].block = [p.block.row, p.block.col];
-    }
-    blobs = data.blobs
-        .map((b) => b && new Blob(b.x, b.y, b.r, b.c))
-        .filter(Boolean);
-    gameStarted = true;
-    paused = false;
-});
-
-socket.on("heartbeat", (data) => {
-    for (let id in data.players) {
-        if (id !== socket.id && players[id]) {
-            players[id].pos.x = data.players[id].x;
-            players[id].pos.y = data.players[id].y;
-            players[id].radius = data.players[id].r;
-        } else if (players[id]) {
-            players[id].block = [
-                data.players[id].block.row,
-                data.players[id].block.col,
-            ];
+function setupSocketEvents() {
+    if (!socket) return;
+    socket.on("blobs", (data) => {
+        if (data && Array.isArray(data.blobs)) {
+            blobs = data.blobs.map((b) => new Blob({
+                x: b.x,
+                y: b.y,
+                r: b.r,
+                c: b.c,
+            }));
+        } else {
+            blobs = [];
         }
-    }
-    playerCount.value = Object.keys(data.players).length;
-    // Sync leaderboard from backend data
-    leaderboard.value = Object.values(data.players)
-        .filter(p => p && p.n)
-        .sort((a, b) => b.r - a.r)
-        .slice(0, 10)
-        .map(p => ({ nick: p.n, score: p5.floor(p.r * 2) }));
-});
-
-socket.on("newPlayer", (data) => {
-    players[data.id] = new Player(
-        data.n,
-        data.id,
-        data.b,
-        data.bc,
-        data.x,
-        data.y
-    );
-    playerCount.value = Object.keys(players).length;
-});
-
-socket.on("removePlayer", (data) => {
-    delete players[data.id];
-    if (data.id == socket.id) {
-        gameStarted = false;
-        paused = true;
         showMenu.value = true;
-    }
-    playerCount.value = Object.keys(players).length;
-});
+    });
 
-socket.on("removeBlob", (data) => {
-    if (data.id !== socket.id) blobs.splice(data.i, 1);
-});
-
-socket.on("newBlob", (data) => {
-    blobs.push(new Blob(data.x, data.y, data.r, data.c));
-});
+    socket.on("start", (data) => {
+        for (let id in data.players) {
+            let p = data.players[id];
+            players[id] = new Player({
+                nick: p.n,
+                id: p.id,
+                color: p.b,
+                bcolor: p.bc,
+                x: p.x,
+                y: p.y,
+            });
+            players[id].block = [p.block.row, p.block.col];
+        }
+        blobs = data.blobs
+            .map((b) => b && new Blob({
+                x: b.x,
+                y: b.y,
+                r: b.r,
+                c: b.c,
+            }))
+            .filter(Boolean);
+        gameStarted = true;
+        paused = false;
+    });
+}
 </script>
 
 <template>
     <div>
-
-        <canvas ref="gameCanvas" id="gameCanvas" :width="w" :height="h" style="position:fixed;top:0;left:0;z-index:0;"></canvas>
-
         <div id="leaderboard" class="leaderboard">
             <h3>Leaderboard</h3>
             <ol>
@@ -286,7 +402,21 @@ socket.on("newBlob", (data) => {
         <div id="menu" v-show="showMenu" class="game-menu bg-red-500 rounded-lg p-4">
             <h1 class="game-header">agario.js</h1>
             <input type="text" placeholder="Nickname" id="nick" required class="name-input" />
-            <button @click="handleConnect" class="connect-btn btn">connect</button>
+            <div class="channel-select">
+                <label>
+                    <input type="radio" v-model="usePrivate" :value="false" />
+                    Public
+                </label>
+                <select v-if="!usePrivate" v-model="selectedChannel" class="channel-dropdown">
+                    <option v-for="i in 5" :key="i" :value="String(i)">Channel {{ i }}</option>
+                </select>
+                <label style="margin-left:16px;">
+                    <input type="radio" v-model="usePrivate" :value="true" />
+                    Privé
+                </label>
+                <input v-if="usePrivate" v-model="privateCode" type="text" maxlength="16" placeholder="Code privé" class="private-code-input" />
+            </div>
+            <button @click="handleConnect" class="connect-btn btn" style="margin-top:12px;">connect</button>
         </div>
     </div>
 </template>
@@ -525,5 +655,28 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* Channel selection styles */
+.channel-select {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+    gap: 8px;
+}
+.channel-dropdown {
+    margin-left: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    font-size: 1rem;
+}
+.private-code-input {
+    margin-left: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    font-size: 1rem;
+    width: 120px;
 }
 </style>

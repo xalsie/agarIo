@@ -1,8 +1,4 @@
 import {Player} from './index.js';
-import {
-	BLOCKS_COUNT,
-	BLOCKS_SIZE,
-} from '../constants.js';
 
 /* Function getNeighbourBlobs(posX, posY) {
 	let neighbourBlobs = field[posX][posY].blobs.concat(
@@ -48,135 +44,113 @@ import {
  * @param {number} y Y position of the player
  * @param {Array} field The field array
  */
-function findBlock(x, y, field) {
-	let pos = 0;
+// function findBlock(x, y, field) {
+// 	let pos = 0;
 
-	for (let i = 0; i < BLOCKS_COUNT; i++) {
-		pos = field[i].findIndex(block => {
-			const xConstrain = block.x <= x && x <= block.x + BLOCKS_SIZE;
-			const yConstrain = block.y <= y && y <= block.y + BLOCKS_SIZE;
+// 	for (let i = 0; i < BLOCKS_COUNT; i++) {
+// 		pos = field[i].findIndex(block => {
+// 			const xConstrain = block.x <= x && x <= block.x + BLOCKS_SIZE;
+// 			const yConstrain = block.y <= y && y <= block.y + BLOCKS_SIZE;
 
-			return xConstrain && yConstrain;
-		});
+// 			return xConstrain && yConstrain;
+// 		});
 
-		if (pos !== -1) {
-			return [i, pos];
-		}
-	}
+// 		if (pos !== -1) {
+// 			return [i, pos];
+// 		}
+// 	}
 
-	return false;
+// 	return false;
 
-	/* Let pos = [
-    Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / x),
-    Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / y)
-    ]
+// 	/* Let pos = [
+// 	Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / x),
+// 	Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / y)
+// 	]
 
-  return pos */
-}
+//   return pos */
+// }
 
-function Socket(io, players, field, blobs) {
+// Updated Socket for channel system
+function Socket(io, channels, createPrivateChannel) {
 	io.sockets.on('connection', socket => {
 		console.log('> [LOG] New client:', `${socket.id}`);
 
-		// Send to socket info about players to create 'Player' objects
-		socket.emit('blobs', {
-			blobs,
-		});
+		// Listen for joinChannel event
+		socket.on('joinChannel', data => {
+			const {channelId} = data;
+			const {code} = data;
+			let channel;
+			if (code) {
+				// Private channel
+				channel = channels[`private_${code}`] || createPrivateChannel(code);
+			} else {
+				channel = channels[channelId];
+			}
 
-		// Socket started playing
-		socket.on('start', data => {
-			const player = new Player(data.x, data.y, data.r, data.b, data.bc, data.n, socket.id);
-			players[socket.id] = player;
-
-			// Get block
-			const pos = findBlock(data.x, data.y, field);
-
-			const posX = pos[0];
-			const posY = pos[1];
-
-			players[socket.id].block.row = posX;
-			players[socket.id].block.col = posY;
-
-			// Send to socket info about players to create 'Player' objects
-			socket.emit('start', {
-				block: [posX, posY],
-				players,
-				blobs,
-			});
-
-			console.log('> [LOG] Player', `${socket.id}`, 'started playing at block', `${pos}`);
-
-			// Say that to clients
-			io.sockets.emit('newPlayer', player);
-		});
-
-		// Socket sends an update
-		socket.on('update', data => {
-			if (!players[socket.id]) {
+			if (!channel) {
+				socket.emit('error', {message: 'Channel not found.'});
 				return;
 			}
 
-			const pos = findBlock(data.x, data.y, field);
-			let posX;
-			let posY;
-
-			if (pos) {
-				posX = pos[0];
-				posY = pos[1];
-			} else {
-				posX = players[socket.id].block.row;
-				posY = players[socket.id].block.col;
-			}
-
-			if (players[socket.id] && (players[socket.id].block.row !== posX || players[socket.id].block.col !== posY)) {
-				delete field[posX][posY].players[socket.id];
-
-				field[posX][posY].players[socket.id] = {
-					x: data.x,
-					y: data.y,
-					r: data.r,
-				};
-
-				players[socket.id].block.row = posX;
-				players[socket.id].block.col = posY;
-			}
-
-			players[socket.id].x = data.x;
-			players[socket.id].y = data.y;
-			players[socket.id].r = data.r;
-		});
-
-		// Socket disconnects
-		socket.on('disconnect', reason => {
-			// Remove player
-			delete players[socket.id];
-
-			// Say that to sockets
-			io.sockets.emit('removePlayer', socket.id);
-
-			console.log('> [LOG] Client', `${socket.id}`, 'disconnected by:', reason);
-			console.log('> [LOG] Players:', Object.keys(players).length);
-		});
-
-		// Socket eats blob
-		socket.on('eatBlob', i => {
-			blobs.splice(i, 1);
-			io.sockets.emit('removeBlob', {
-				i,
+			// Log the connection with channel
+			console.log(`> [CHANNEL] Client ${socket.id} joined channel: ${channel.id}`);
+			socket.join(`channel_${channel.id}`);
+			// Add player to channel
+			const player = new Player({
+				x: data.x,
+				y: data.y,
+				r: data.r,
+				b: data.b,
+				bc: data.bc,
+				n: data.n,
 				id: socket.id,
 			});
-		});
+			channel.players[socket.id] = player;
+			// Send initial state
+			socket.emit('start', {
+				players: channel.players,
+				blobs: channel.blobs,
+			});
+			// Notify others
+			socket.to(`channel_${channel.id}`).emit('newPlayer', player);
 
-		socket.on('removePlayer', id => {
-			delete players[id];
+			// Handle updates for this channel
+			socket.on('update', updateData => {
+				if (!channel.players[socket.id]) {
+					return;
+				}
 
-			console.log('> [LOG]', id, 'was eaten by', socket.id);
+				channel.players[socket.id].x = updateData.x;
+				channel.players[socket.id].y = updateData.y;
+				channel.players[socket.id].r = updateData.r;
+			});
 
-			io.sockets.emit('removePlayer', {
-				id,
-				eater: socket.id,
+			socket.on('eatBlob', i => {
+				if (typeof i !== 'number') {
+					return;
+				}
+
+				channel.blobs.splice(i, 1);
+				io.to(`channel_${channel.id}`).emit('removeBlob', {i, id: socket.id});
+			});
+
+			socket.on('removePlayer', id => {
+				delete channel.players[id];
+				io.to(`channel_${channel.id}`).emit('removePlayer', {id, eater: socket.id});
+			});
+
+			socket.on('disconnect', () => {
+				delete channel.players[socket.id];
+
+				if (Object.keys(channel.players).length === 0 && channel.isPrivate) {
+					delete channels[channel.id];
+				}
+
+				socket.to(`channel_${channel.id}`).emit('removePlayer', {id: socket.id});
 			});
 		});
+
+		// (Old per-player logic removed; all per-channel logic is now handled in joinChannel)
 	});
 }
 

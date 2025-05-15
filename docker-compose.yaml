@@ -1,0 +1,16 @@
+services:
+  backend:
+    image: node:24
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    command: sh -c "npm i -g bun && bun install && bun run dev -- --host 0.0.0.0"
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
