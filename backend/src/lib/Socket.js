@@ -1,0 +1,185 @@
+import {Player} from './index.js';
+import {
+	BLOCKS_COUNT,
+	BLOCKS_SIZE,
+} from '../constants.js';
+
+/* Function getNeighbourBlobs(posX, posY) {
+	let neighbourBlobs = field[posX][posY].blobs.concat(
+		field[posX - 1] && field[posX - 1][posY - 1] ? field[posX - 1][posY - 1].blobs : [],
+		field[posX] && field[posX][posY - 1] ? field[posX][posY - 1].blobs : [],
+		field[posX + 1] && field[posX + 1][posY - 1] ? field[posX + 1][posY - 1].blobs : [],
+
+		field[posX - 1] && field[posX - 1][posY] ? field[posX - 1][posY].blobs : [],
+		field[posX + 1] && field[posX + 1][posY] ? field[posX + 1][posY].blobs : [],
+
+		field[posX - 1] && field[posX - 1][posY + 1] ? field[posX - 1][posY + 1].blobs : [],
+		field[posX] && field[posX][posY + 1] ? field[posX][posY + 1].blobs : [],
+		field[posX + 1] && field[posX + 1][posY + 1] ? field[posX + 1][posY + 1].blobs : [],
+	)
+
+	// let neighbourBlobs = []
+
+	// if (field[posX - 1] && field[posX - 1][posY - 1])
+	//   neighbourBlobs.push(field[posX - 1][posY - 1].blobs)
+	// if (field[posX] && field[posX][posY - 1])
+	//   neighbourBlobs.push(field[posX][posY - 1].blobs)
+	// if (field[posX + 1] && field[posX + 1][posY - 1])
+	//   neighbourBlobs.push(field[posX + 1][posY - 1].blobs)
+
+	// if (field[posX - 1] && field[posX - 1][posY])
+	//   neighbourBlobs.push(field[posX - 1][posY].blobs)
+	// if (field[posX + 1] && field[posX + 1][posY])
+	//   neighbourBlobs.push(field[posX + 1][posY].blobs)
+
+	// if (field[posX - 1] && field[posX - 1][posY + 1])
+	//   neighbourBlobs.push(field[posX - 1][posY + 1].blobs)
+	// if (field[posX] && field[posX][posY + 1])
+	//   neighbourBlobs.push(field[posX][posY + 1].blobs)
+	// if (field[posX + 1] && field[posX + 1][posY + 1])
+	//   neighbourBlobs.push(field[posX + 1][posY + 1].blobs)
+
+	return neighbourBlobs
+} */
+
+/**
+ * Finds index of block, that should contain player
+ * @param {number} x X position of the player
+ * @param {number} y Y position of the player
+ * @param {Array} field The field array
+ */
+function findBlock(x, y, field) {
+	let pos = 0;
+
+	for (let i = 0; i < BLOCKS_COUNT; i++) {
+		pos = field[i].findIndex(block => {
+			const xConstrain = block.x <= x && x <= block.x + BLOCKS_SIZE;
+			const yConstrain = block.y <= y && y <= block.y + BLOCKS_SIZE;
+
+			return xConstrain && yConstrain;
+		});
+
+		if (pos !== -1) {
+			return [i, pos];
+		}
+	}
+
+	return false;
+
+	/* Let pos = [
+    Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / x),
+    Math.floor((BLOCKS_COUNT * BLOCKS_SIZE) / y)
+    ]
+
+  return pos */
+}
+
+function Socket(io, players, field, blobs) {
+	io.sockets.on('connection', socket => {
+		console.log('> [LOG] New client:', `${socket.id}`);
+
+		// Send to socket info about players to create 'Player' objects
+		socket.emit('blobs', {
+			blobs,
+		});
+
+		// Socket started playing
+		socket.on('start', data => {
+			const player = new Player(data.x, data.y, data.r, data.b, data.bc, data.n, socket.id);
+			players[socket.id] = player;
+
+			// Get block
+			const pos = findBlock(data.x, data.y, field);
+
+			const posX = pos[0];
+			const posY = pos[1];
+
+			players[socket.id].block.row = posX;
+			players[socket.id].block.col = posY;
+
+			// Send to socket info about players to create 'Player' objects
+			socket.emit('start', {
+				block: [posX, posY],
+				players,
+				blobs,
+			});
+
+			console.log('> [LOG] Player', `${socket.id}`, 'started playing at block', `${pos}`);
+
+			// Say that to clients
+			io.sockets.emit('newPlayer', player);
+		});
+
+		// Socket sends an update
+		socket.on('update', data => {
+			if (!players[socket.id]) {
+				return;
+			}
+
+			const pos = findBlock(data.x, data.y, field);
+			let posX;
+			let posY;
+
+			if (pos) {
+				posX = pos[0];
+				posY = pos[1];
+			} else {
+				posX = players[socket.id].block.row;
+				posY = players[socket.id].block.col;
+			}
+
+			if (players[socket.id] && (players[socket.id].block.row !== posX || players[socket.id].block.col !== posY)) {
+				delete field[posX][posY].players[socket.id];
+
+				field[posX][posY].players[socket.id] = {
+					x: data.x,
+					y: data.y,
+					r: data.r,
+				};
+
+				players[socket.id].block.row = posX;
+				players[socket.id].block.col = posY;
+			}
+
+			players[socket.id].x = data.x;
+			players[socket.id].y = data.y;
+			players[socket.id].r = data.r;
+		});
+
+		// Socket disconnects
+		socket.on('disconnect', reason => {
+			// Remove player
+			delete players[socket.id];
+
+			// Say that to sockets
+			io.sockets.emit('removePlayer', socket.id);
+
+			console.log('> [LOG] Client', `${socket.id}`, 'disconnected by:', reason);
+			console.log('> [LOG] Players:', Object.keys(players).length);
+		});
+
+		// Socket eats blob
+		socket.on('eatBlob', i => {
+			blobs.splice(i, 1);
+			io.sockets.emit('removeBlob', {
+				i,
+				id: socket.id,
+			});
+		});
+
+		socket.on('removePlayer', id => {
+			delete players[id];
+
+			console.log('> [LOG]', id, 'was eaten by', socket.id);
+
+			io.sockets.emit('removePlayer', {
+				id,
+				eater: socket.id,
+			});
+		});
+	});
+}
+
+export {
+	Socket,
+};
