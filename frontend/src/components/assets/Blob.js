@@ -5,16 +5,11 @@ const BLOB_RADIUS = 5;
 
 /** Class representing a blob. */
 export default class Blob {
-	constructor({x, y, r, c}) {
-		if (x && y) {
-			this.pos = p5.createVector(x, y);
-			this.radius = p5.floor(r);
-			this.color = c;
-		} else {
-			this.pos = p5.createVector(p5.random(0, FIELD_SIZE), p5.random(0, FIELD_SIZE));
-			this.radius = p5.floor(p5.random(BLOB_RADIUS, BLOB_RADIUS * 1.3));
-			this.color = this.randomColor().body;
-		}
+	constructor({x, y, r, c, id}) {
+		this.pos = p5.createVector(x, y);
+		this.radius = p5.floor(r);
+		this.color = c;
+		this.id = id;
 	}
 
 	randomColor = () => {
@@ -29,9 +24,9 @@ export default class Blob {
 	};
 
 	/**
-     * Draws blob
-     * @function
-     */
+	 * Draws blob
+	 * @function
+	 */
 	draw() {
 		p5.fill(this.color);
 		p5.noStroke();

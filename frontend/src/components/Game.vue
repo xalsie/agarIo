@@ -10,12 +10,10 @@ const playerCount = ref(0);
 const playerPosition = ref({ x: 0, y: 0 });
 const showMenu = ref(true);
 
-// Channel selection state
 const selectedChannel = ref('1');
 const privateCode = ref('');
 const usePrivate = ref(false);
 
-// Leaderboard state
 const leaderboard = ref([]);
 
 let w = window.innerWidth;
@@ -93,7 +91,6 @@ function connectToServer(nick) {
     socket.on("heartbeat", (data) => {
         for (let id in data.players) {
             if (players[id]) {
-                // For local player, update radius and block only
                 if (id === socket.id) {
                     players[id].radius = data.players[id].r;
                     players[id].block = [
@@ -101,14 +98,13 @@ function connectToServer(nick) {
                         data.players[id].block.col,
                     ];
                 } else {
-                    // For enemies, set target for interpolation and update radius
                     players[id].setTarget(data.players[id].x, data.players[id].y);
                     players[id].radius = data.players[id].r;
                 }
             }
         }
         playerCount.value = Object.keys(data.players).length;
-        // Sync leaderboard from backend data
+
         leaderboard.value = Object.values(data.players)
             .filter(p => p && p.n)
             .sort((a, b) => b.r - a.r)
@@ -139,16 +135,24 @@ function connectToServer(nick) {
     });
 
     socket.on("removeBlob", (data) => {
-        if (data.id !== socket.id) blobs.splice(data.i, 1);
+        if (typeof data.blobId !== 'undefined') {
+            const idx = blobs.findIndex(b => b && b.id === data.blobId);
+            if (idx !== -1) {
+                blobs.splice(idx, 1);
+                console.log("Blob removed by id", data.blobId);
+            }
+        }
     });
 
     socket.on("newBlob", (data) => {
+        const b = data.blob || data;
         blobs.push(
             new Blob({
-                x: data.x,
-                y: data.y,
-                r: data.r,
-                c: data.c
+                x: b.x,
+                y: b.y,
+                r: b.r,
+                c: b.c,
+                id: b.id
             })
         );
     });
@@ -179,7 +183,9 @@ function windowResized() {
 
 p5.setup = () => {
     p5.createCanvas(w, h);
-    // ui = new UI(p5, players, socket);
+
+    p5.frameRate(150);
+
     grid = new Grid(GRID_SIZE);
     grid.draw({
         viewportX: w / 2,
@@ -191,7 +197,6 @@ p5.setup = () => {
 };
 
 p5.draw = () => {
-    // FPS update throttled to 1s for less DOM update
     const now = performance.now();
     if (now - lastFpsUpdate > 1000) {
         const newFps = Math.round(p5.frameRate());
@@ -200,7 +205,7 @@ p5.draw = () => {
     }
     if (!gameStarted) {
         p5.clear();
-        // Optimized grid draw: only visible lines
+
         grid.draw({
             viewportX: w / 2,
             viewportY: h / 2,
@@ -219,7 +224,7 @@ p5.draw = () => {
         p5.rect(0, 0, w, h);
         return;
     }
-    // Defensive: check socket and players[socket.id] before using
+
     if (!socket || !players || !players[socket.id]) {
         if (ui && typeof ui.loading === 'function') return ui.loading();
         return;
@@ -227,12 +232,18 @@ p5.draw = () => {
     p5.clear();
     p5.translate(w / 2, h / 2);
     let player = players[socket.id];
-    let newZoom = p5.sqrt(h / ((player && player.radius ? player.radius : PLAYER_RADIUS) * 8));
-    zoom = p5.lerp(zoom, Math.max(newZoom, 0.7), 0.1);
+
+    let visionFactor = 2 + Math.max(0, (player.radius - PLAYER_RADIUS) / 30);
+    let newZoom = p5.sqrt(h / ((player && player.radius ? player.radius : PLAYER_RADIUS) * visionFactor));
+
+    const minZoom = 0.2;
+    const maxZoom = 2.0;
+    newZoom = Math.max(minZoom, Math.min(newZoom, maxZoom));
+    zoom = p5.lerp(zoom, newZoom, 0.1);
     p5.scale(zoom);
     if (player && player.pos) {
         p5.translate(-player.pos.x, -player.pos.y);
-        // Optimized grid draw: only visible lines
+
         grid.draw({
             viewportX: player.pos.x,
             viewportY: player.pos.y,
@@ -250,12 +261,12 @@ p5.draw = () => {
             zoom: zoom,
         });
     }
-    // --- OPTIMIZED BLOBS RENDERING: only draw visible blobs ---
+
     const viewX = player && player.pos ? player.pos.x : 0;
     const viewY = player && player.pos ? player.pos.y : 0;
     const viewW = w / zoom;
     const viewH = h / zoom;
-    // Cache visible area for blobs
+
     const minBlobX = viewX - viewW / 2 - BLOB_RADIUS;
     const maxBlobX = viewX + viewW / 2 + BLOB_RADIUS;
     const minBlobY = viewY - viewH / 2 - BLOB_RADIUS;
@@ -267,8 +278,9 @@ p5.draw = () => {
         if (bx < minBlobX || bx > maxBlobX || by < minBlobY || by > maxBlobY) continue;
         blob.draw();
         if (player && typeof player.eats === 'function' && player.eats(blob)) {
-            socket.emit("eatBlob", i);
+            socket.emit("eatBlob", blob.id);
             blobs.splice(i, 1);
+            // console.log("Blob eaten with id", blob.id);
         }
     }
     p5.stroke(100, 100, 150, 10);
@@ -276,39 +288,54 @@ p5.draw = () => {
     p5.noFill();
     p5.rect(0, 0, FIELD_SIZE, FIELD_SIZE);
     ui.draw();
-    // --- OPTIMIZED PLAYERS RENDERING: only draw visible players ---
-    // Cache visible area for players
-    const minPlayerX = viewX - viewW / 2 - PLAYER_RADIUS;
-    const maxPlayerX = viewX + viewW / 2 + PLAYER_RADIUS;
-    const minPlayerY = viewY - viewH / 2 - PLAYER_RADIUS;
-    const maxPlayerY = viewY + viewH / 2 + PLAYER_RADIUS;
+
+    let maxEnemyRadius = PLAYER_RADIUS;
+    for (const id in players) {
+        if (id !== socket.id && players[id] && typeof players[id].radius === 'number') {
+            if (players[id].radius > maxEnemyRadius) maxEnemyRadius = players[id].radius;
+        }
+    }
+
+    const ENEMY_VIEW_MARGIN = 400 + maxEnemyRadius * 2;
+    const minPlayerX = viewX - viewW / 2 - PLAYER_RADIUS - ENEMY_VIEW_MARGIN;
+    const maxPlayerX = viewX + viewW / 2 + PLAYER_RADIUS + ENEMY_VIEW_MARGIN;
+    const minPlayerY = viewY - viewH / 2 - PLAYER_RADIUS - ENEMY_VIEW_MARGIN;
+    const maxPlayerY = viewY + viewH / 2 + PLAYER_RADIUS + ENEMY_VIEW_MARGIN;
+
+    if (!window._lastEmitTimes) window._lastEmitTimes = {};
     for (const id in players) {
         const p = players[id];
         if (!p || !p.pos) continue;
-        // Mark local player for interpolation logic
+
         p.isLocal = (id === socket.id);
-        // Interpolate enemy movement
+
         if (!p.isLocal && typeof p.interpolate === 'function') {
-            p.interpolate(0.05); // dt controls smoothing
+            p.interpolate(0.03);
         }
         const px = p.pos.x, py = p.pos.y;
         if (px < minPlayerX || px > maxPlayerX || py < minPlayerY || py > maxPlayerY) continue;
         p.draw();
+
         if (id !== socket.id && player && typeof player.eats === 'function' && player.eats(p) && p) {
             delete players[id];
             socket.emit("removePlayer", id);
         }
+
         if (id === socket.id && !paused && player) {
             if (typeof player.move === 'function') player.move();
-            socket.emit("update", {
-                x: player.pos.x,
-                y: player.pos.y,
-                r: player.radius,
-            });
+            const now = Date.now();
+            if (!window._lastEmitTimes['update']) window._lastEmitTimes['update'] = 0;
+            if (now - window._lastEmitTimes['update'] > 100) {
+                socket.emit("update", {
+                    x: player.pos.x,
+                    y: player.pos.y,
+                    r: player.radius,
+                });
+                window._lastEmitTimes['update'] = now;
+            }
         }
     }
-    // Only update playerPosition ref if changed
-    // Only update playerPosition ref if changed, throttle to 100ms
+
     if (player && player.pos) {
         const px = Math.round(player.pos.x);
         const py = Math.round(player.pos.y);
@@ -327,7 +354,6 @@ onMounted(() => {
     window.addEventListener("resize", windowResized);
 });
 
-// Socket events
 function setupSocketEvents() {
     if (!socket) return;
     socket.on("blobs", (data) => {
@@ -337,6 +363,7 @@ function setupSocketEvents() {
                 y: b.y,
                 r: b.r,
                 c: b.c,
+                id: b.id
             }));
         } else {
             blobs = [];
@@ -363,6 +390,7 @@ function setupSocketEvents() {
                 y: b.y,
                 r: b.r,
                 c: b.c,
+                id: b.id
             }))
             .filter(Boolean);
         gameStarted = true;
@@ -605,9 +633,6 @@ body {
 }
 
 .player-position {
-    /* position: absolute;
-  top: 8px;
-  right: 16px; */
     background: rgba(0, 0, 0, 0.5);
     color: #fff;
     padding: 6px 16px;
@@ -656,7 +681,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-/* Channel selection styles */
+
 .channel-select {
     display: flex;
     align-items: center;

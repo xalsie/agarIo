@@ -3,7 +3,6 @@ import p5 from '../p5-instantiate';
 const PLAYER_RADIUS = 16;
 const FIELD_SIZE = 10000;
 
-/** Class representing a Player. */
 export default class Player {
 	constructor({nick, id, color, bcolor, x, y}) {
 		this.radius = PLAYER_RADIUS;
@@ -15,7 +14,6 @@ export default class Player {
 			this.pos = p5.createVector(p5.random(0, FIELD_SIZE), p5.random(0, FIELD_SIZE));
 		}
 
-		// For enemy interpolation
 		this.targetPos = this.pos.copy();
 		this.lastUpdate = Date.now();
 
@@ -39,7 +37,6 @@ export default class Player {
 	* Call this in the main draw loop for all enemies
 	*/
 	interpolate(dt = 0.05) {
-		// Only interpolate if not the local player
 		if (!this.isLocal) {
 			this.pos.x = p5.lerp(this.pos.x, this.targetPos.x, dt);
 			this.pos.y = p5.lerp(this.pos.y, this.targetPos.y, dt);
@@ -93,7 +90,6 @@ export default class Player {
 		p5.beginShape();
 		this.makePoints();
 		this.points.forEach(p => {
-			// p5.curveVertex(p.x, p.y);
 			p5.vertex(p.x, p.y);
 		});
 		p5.endShape(p5.CLOSE);
@@ -114,7 +110,6 @@ export default class Player {
 	move() {
 		const newVelocity = p5.createVector(p5.mouseX - (p5.windowWidth / 2), p5.mouseY - (p5.windowHeight / 2));
 
-		// Update values
 		this.mass = p5.PI * this.radius * this.radius;
 		this.speed = 30 * (this.mass ** -0.2);
 		newVelocity.setMag(this.speed * 0.95);
@@ -132,7 +127,6 @@ export default class Player {
 	 * @param {object} blob Blob object
 	 */
 	eats(blob) {
-		// Let d = p5.Vector.dist(this.pos, blob.pos);
 		const d = p5.dist(this.pos.x, this.pos.y, blob.pos.x, blob.pos.y);
 
 		if (d < (this.radius - (blob.radius * 0.5)) && this.radius > blob.radius) {
@@ -140,12 +134,9 @@ export default class Player {
 				return;
 			}
 
-			// A sum of 2 circles' area
 			const sum
 				= (p5.PI * this.radius * this.radius) + (p5.PI * blob.radius * blob.radius * 6);
 
-			// R^2 = S / PI, then
-			// R = square root of S / PI
 			this.radius = p5.sqrt(sum / p5.PI);
 			return true;
 		}
