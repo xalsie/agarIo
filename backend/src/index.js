@@ -7,7 +7,6 @@ import {BLOCKS_COUNT, BLOBS_COUNT} from './constants.js';
 import {Blob, Block, Socket as socket} from './lib/index.js';
 
 const PORT = 4000;
-// const ORIGIN = 'http://localhost:5173';
 
 const app = express();
 app.use(cors());
@@ -35,27 +34,24 @@ setInterval(() => {
 			heartbeat(c);
 		}
 	}
-}, 750);
+}, 100);
 
-// Add blobs to each channel
 setInterval(() => {
 	for (const c in channels) {
 		if (Object.hasOwn(channels, c)) {
-			if (Object.keys(channels[c].players).length === 0) {
-				// console.log(`> [CHANNEL] No players in channel: ${c}`, 'No blobs added');
-				continue;
-			}
 
 			const channel = channels[c];
-			if (channel.blobs.length > BLOBS_COUNT) {
+			if (channel.blobs.length >= BLOBS_COUNT) {
 				continue;
 			}
 
 			const newBlob = new Blob();
 			channel.blobs.push(newBlob);
-			io.to(`channel_${c}`).emit('newBlob', {
+			io.to(`${c}`).emit('newBlob', {
 				blob: newBlob,
 			});
+
+			// console.log(`> [CHANNEL] Added blob to channel: ${c}`, `Total blobs: ${channel.blobs.length}`);
 		}
 	}
 }, 1000);
@@ -80,7 +76,7 @@ function createPrivateChannel(code) {
 	const id = `private_${code}`;
 	if (channels[id]) {
 		return null;
-	} // Already exists
+	}
 
 	channels[id] = {
 		id,
@@ -109,7 +105,6 @@ function createPrivateChannel(code) {
 }
 // #endregion
 
-// Init default channels' fields and blobs
 for (const c in channels) {
 	if (Object.hasOwn(channels, c)) {
 		for (let i = 0; i < BLOCKS_COUNT; i++) {
@@ -126,23 +121,19 @@ for (const c in channels) {
 	}
 }
 
-// Handle socket, pass channels and private channel creation
 socket(io, channels, createPrivateChannel);
 
-// Listen on port
 server.listen(PORT, () => {
 	console.log('> [SERVER] Listening on port', PORT);
 });
 
-// Functions
-// Heartbeat for a specific channel
 function heartbeat(channelId) {
 	const ch = channels[channelId];
 	if (!ch || Object.keys(ch.players).length === 0) {
 		return;
 	}
 
-	io.to(`channel_${channelId}`).emit('heartbeat', {
+	io.to(`${channelId}`).emit('heartbeat', {
 		players: ch.players,
 		leaderboard: Object.values(ch.players)
 			.sort((a, b) => (b.r || 0) - (a.r || 0))
