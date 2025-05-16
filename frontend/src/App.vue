@@ -9,6 +9,7 @@ import Game from './components/Game.vue'
 <style>
 body {
   overflow: hidden;
+  margin: 0;
 }
 
 .logo {

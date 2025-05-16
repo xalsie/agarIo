@@ -428,23 +428,29 @@ function setupSocketEvents() {
         </div>
 
         <div id="menu" v-show="showMenu" class="game-menu bg-red-500 rounded-lg p-4">
-            <h1 class="game-header">agario.js</h1>
-            <input type="text" placeholder="Nickname" id="nick" required class="name-input" />
-            <div class="channel-select">
-                <label>
-                    <input type="radio" v-model="usePrivate" :value="false" />
-                    Public
-                </label>
-                <select v-if="!usePrivate" v-model="selectedChannel" class="channel-dropdown">
-                    <option v-for="i in 5" :key="i" :value="String(i)">Channel {{ i }}</option>
-                </select>
-                <label style="margin-left:16px;">
-                    <input type="radio" v-model="usePrivate" :value="true" />
-                    Privé
-                </label>
-                <input v-if="usePrivate" v-model="privateCode" type="text" maxlength="16" placeholder="Code privé" class="private-code-input" />
+            <div style="
+                padding: 20px;
+                border-radius: 15px;
+                background: white;
+            ">
+                <h1 class="game-header" style="color: gray;">agario.js</h1>
+                <input type="text" placeholder="Nickname" id="nick" required class="name-input" />
+                <div class="channel-select">
+                    <label>
+                        <input type="radio" v-model="usePrivate" :value="false" />
+                        Public
+                    </label>
+                    <select v-if="!usePrivate" v-model="selectedChannel" class="channel-dropdown">
+                        <option v-for="i in 5" :key="i" :value="String(i)">Channel {{ i }}</option>
+                    </select>
+                    <label style="margin-left:16px;">
+                        <input type="radio" v-model="usePrivate" :value="true" />
+                        Privé
+                    </label>
+                    <input v-if="usePrivate" v-model="privateCode" type="text" maxlength="16" placeholder="Code privé" class="private-code-input" />
+                </div>
+                <button @click="handleConnect" class="connect-btn btn" style="margin-top:12px;">connect</button>
             </div>
-            <button @click="handleConnect" class="connect-btn btn" style="margin-top:12px;">connect</button>
         </div>
     </div>
 </template>
@@ -601,8 +607,8 @@ body {
     width: 100%;
     height: 48px;
     background: transparent !important;
-    border: none;
-    border-bottom: 2px white solid;
+    /* border: none;
+    border-bottom: 2px white solid; */
     color: white;
     font-size: 1.1rem;
     margin-bottom: 6px;
